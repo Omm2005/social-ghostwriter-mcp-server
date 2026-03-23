@@ -31,3 +31,5 @@ pnpm-debug.log*
 .idea/
 .vscode/
 !.vscode/extensions.json
+
+POSTING_GUIDE.md
