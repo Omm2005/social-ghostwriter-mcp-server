@@ -1,6 +1,6 @@
 # Posting Guide (`linkedin_create_post`)
 
-This guide explains how to call the unified `linkedin_create_post` tool, including mention index math (`start` + `length`) and media fields.
+This guide explains how to call `linkedin_create_post` with the current input model: mentions by `target_text` and media by direct URL.
 
 ## 1) Tool Input Shape
 
@@ -13,15 +13,17 @@ This guide explains how to call the unified `linkedin_create_post` tool, includi
   "mentions": [
     {
       "entity_urn": "urn:li:person:<id> | urn:li:organization:<id>",
-      "start": 0,
-      "length": 1,
+      "entity_link": "https://www.linkedin.com/in/<handle>/ | https://www.linkedin.com/company/<vanity>/",
+      "entity_name": "optional display name",
+      "target_text": "word or phrase in text (required)",
+      "occurrence": "optional integer >= 1, default 1",
       "entity_type": "member | company"
     }
   ],
   "media": [
     {
       "type": "IMAGE | VIDEO",
-      "url": "https://...",
+      "url": "https://... (required direct media URL)",
       "title": "optional",
       "description": "optional"
     }
@@ -29,38 +31,29 @@ This guide explains how to call the unified `linkedin_create_post` tool, includi
 }
 ```
 
-## 2) Mention Index Rules (`start`, `length`)
+## 2) Mention Rules (`target_text` Required)
 
-Mentions depend on exact character positions in `text`.
-
-- `start`: 0-based character index where the mentioned word starts
-- `length`: number of characters in the mentioned word
+- `target_text`: exact word/phrase in `text` to mention
+- `occurrence`: which match to use when repeated (`1` = first, `2` = second, etc.)
+- `entity_link`: LinkedIn URL for the mentioned entity (required for user reference)
+- `entity_name`: optional display name; checker may overwrite it when different
 - `entity_type`:
   - `company` -> `entity_urn` must be `urn:li:organization:...`
   - `member` -> `entity_urn` must be `urn:li:person:...`
 
-### Quick Example
+Browser Use checker behavior:
+- `entity_link` is sent to your configured Browser Use skill before posting.
+- If checker returns different URN or name, values are auto-corrected.
+- Tool response includes `mention_corrections`.
 
-Text:
-
-```text
-Test mention Microsoft only.
-```
-
-Index map:
-- `Test` -> chars `0-3`
-- space -> `4`
-- `mention` -> `5-11`
-- space -> `12`
-- `Microsoft` -> `13-21`
-
-So mention object is:
+### Quick Example (`target_text`)
 
 ```json
 {
   "entity_urn": "urn:li:organization:1035",
-  "start": 13,
-  "length": 9,
+  "entity_link": "https://www.linkedin.com/company/microsoft/",
+  "target_text": "Microsoft",
+  "occurrence": 1,
   "entity_type": "company"
 }
 ```
@@ -76,15 +69,15 @@ So mention object is:
   "mentions": [
     {
       "entity_urn": "urn:li:organization:1035",
-      "start": 13,
-      "length": 9,
+      "entity_link": "https://www.linkedin.com/company/microsoft/",
+      "target_text": "Microsoft",
       "entity_type": "company"
     }
   ]
 }
 ```
 
-### B) Image Post + Mention
+### B) Image Post + Mention (Public URL)
 
 ```json
 {
@@ -93,8 +86,8 @@ So mention object is:
   "mentions": [
     {
       "entity_urn": "urn:li:organization:1035",
-      "start": 15,
-      "length": 9,
+      "entity_link": "https://www.linkedin.com/company/microsoft/",
+      "target_text": "Microsoft",
       "entity_type": "company"
     }
   ],
@@ -159,20 +152,30 @@ LinkedIn blocked duplicate content.
 - Change media title/description
 
 ### `LinkedIn rejected media type ... 415`
-Your media URL is not a direct supported media file.
-- For images, use direct JPG/PNG/GIF URL
-- Check with: `curl -I <url>` and confirm `Content-Type`
+Your media content type does not match what LinkedIn accepts.
+- For image uploads, content type must be JPG/PNG/GIF.
+- For URL uploads, verify with: `curl -I <url>` and confirm `Content-Type`.
+
+### `mentions[i] must include target_text`
+The mention object is missing `target_text`.
+- Add `target_text` for every mention item.
+
+### `target_text not found in post text`
+The phrase was not found in `text` at runtime.
+- Ensure exact case-sensitive match.
+- If repeated, set `occurrence` to the intended match number.
 
 ### Mention not linking correctly
-- Recheck `start` and `length` against exact text
+- Recheck `target_text` exactly matches your post text (case-sensitive)
+- If target appears multiple times, set `occurrence` (1, 2, 3, ...)
 - Verify URN/entity type pairing (`company` + org URN, `member` + person URN)
 
 ## 5) Safe Testing Pattern
 
 1. Start with text-only payload.
-2. Add one mention.
+2. Add one mention with `target_text`.
 3. Add one image.
 4. Add one video.
 5. Then try mixed media.
 
-This sequence makes it easier to isolate whether a failure is mention indexing, media URL, or LinkedIn-side behavior.
+This sequence makes it easier to isolate whether a failure is mention targeting, media URL, or LinkedIn-side behavior.

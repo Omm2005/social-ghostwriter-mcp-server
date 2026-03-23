@@ -24,17 +24,20 @@ Mention object shape:
 ```json
 {
   "entity_urn": "urn:li:person:...",
-  "start": 0,
-  "length": 8,
+  "entity_link": "https://www.linkedin.com/in/<handle>/",
+  "entity_name": "optional display name",
+  "target_text": "John",
+  "occurrence": 1,
   "entity_type": "member"
 }
 ```
 
 `entity_type` can be `member` or `company` (`urn:li:organization:...`).
+Before posting, mentions are checked with Browser Use using `entity_link`; if URN/name differs, the tool auto-corrects and returns `mention_corrections`.
 
 ## Posting Guide
 
-See [POSTING_GUIDE.md](./POSTING_GUIDE.md) for mention index math (`start`/`length`), payload examples, and troubleshooting.
+See [POSTING_GUIDE.md](./POSTING_GUIDE.md) for mention targeting (`target_text`), payload examples, and troubleshooting.
 
 ## Routes
 
@@ -67,6 +70,8 @@ Copy the returned ID into `wrangler.jsonc` under `kv_namespaces[0].id`.
 npx wrangler secret put LINKEDIN_CLIENT_ID
 npx wrangler secret put LINKEDIN_CLIENT_SECRET
 npx wrangler secret put COOKIE_ENCRYPTION_KEY
+npx wrangler secret put BROWSER_USE_API_KEY
+npx wrangler secret put BROWSER_USE_SKILL_ID
 ```
 
 Optional allowlist for MCP OAuth clients:
@@ -97,6 +102,7 @@ npm run deploy
 - `LINKEDIN_VERSION` (default `202506`)
 - `RESTLI_PROTOCOL_VERSION` (default `2.0.0`)
 - `ENABLE_DEBUG_TOOLS` (`true` enables `linkedin_get_auth_diagnostics`)
+- `BROWSER_USE_BASE_URL` (optional, default `https://api.browser-use.com/api/v2`)
 
 ## Notes
 

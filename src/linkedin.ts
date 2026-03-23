@@ -7,6 +7,9 @@ type LinkedInEnv = {
   LINKEDIN_VERSION?: string;
   RESTLI_PROTOCOL_VERSION?: string;
   ENABLE_DEBUG_TOOLS?: string;
+  BROWSER_USE_API_KEY?: string;
+  BROWSER_USE_SKILL_ID?: string;
+  BROWSER_USE_BASE_URL?: string;
 };
 
 type ToolResponse = {
@@ -26,8 +29,10 @@ type LinkedInUserInfo = {
 
 type MentionInput = {
   entity_urn: string;
-  start: number;
-  length: number;
+  entity_link: string;
+  entity_name?: string;
+  target_text: string;
+  occurrence?: number;
   entity_type: "member" | "company";
 };
 
@@ -36,15 +41,8 @@ type CachedAccessToken = {
   expiresAt: number;
 };
 
-type LinkArticleMedia = {
-  status: "READY";
-  originalUrl: string;
-  title: { text: string };
-  description: { text: string };
-};
-
 type PostMediaInputItem = {
-  type?: "IMAGE" | "VIDEO";
+  type: "IMAGE" | "VIDEO";
   url: string;
   title?: string;
   description?: string;
@@ -123,6 +121,7 @@ const LINKEDIN_POST_URL = "https://api.linkedin.com/v2/ugcPosts";
 const LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken";
 const LINKEDIN_ASSET_REGISTER_URL = "https://api.linkedin.com/rest/assets?action=registerUpload";
 const LINKEDIN_V2_ASSET_REGISTER_URL = "https://api.linkedin.com/v2/assets?action=registerUpload";
+const BROWSER_USE_DEFAULT_BASE_URL = "https://api.browser-use.com/api/v2";
 
 function successText(value: string): ToolResponse {
   return { content: [{ type: "text", text: value }] };
@@ -337,15 +336,6 @@ async function getCurrentUser(accessToken: string): Promise<LinkedInUserInfo> {
   return profile;
 }
 
-function buildArticleMedia(items: PostMediaInputItem[]): LinkArticleMedia[] {
-  return items.map((item, index) => ({
-    status: "READY",
-    originalUrl: item.url,
-    title: { text: item.title ?? `Link ${index + 1}` },
-    description: { text: item.description ?? "" },
-  }));
-}
-
 function buildMentionAttributes(input: {
   text: string;
   mentions?: MentionInput[];
@@ -355,16 +345,56 @@ function buildMentionAttributes(input: {
     return [];
   }
 
-  const charLength = [...input.text].length;
+  const textCodePoints = [...input.text];
+  const charLength = textCodePoints.length;
+
+  const findMentionRange = (mention: MentionInput, index: number): { start: number; length: number } => {
+    if (!mention.target_text || mention.target_text.length === 0) {
+      throw new ToolInputError(
+        `mentions[${index}] must include target_text.`,
+      );
+    }
+
+    const needle = [...mention.target_text];
+    const occurrence = mention.occurrence ?? 1;
+    if (!Number.isInteger(occurrence) || occurrence < 1) {
+      throw new ToolInputError(`mentions[${index}].occurrence must be an integer >= 1.`);
+    }
+
+    let seen = 0;
+    const maxStart = textCodePoints.length - needle.length;
+    for (let i = 0; i <= maxStart; i += 1) {
+      let matches = true;
+      for (let j = 0; j < needle.length; j += 1) {
+        if (textCodePoints[i + j] !== needle[j]) {
+          matches = false;
+          break;
+        }
+      }
+      if (!matches) {
+        continue;
+      }
+      seen += 1;
+      if (seen === occurrence) {
+        return { start: i, length: needle.length };
+      }
+    }
+
+    throw new ToolInputError(
+      `mentions[${index}] target_text not found in post text (target_text="${mention.target_text}", occurrence=${occurrence}).`,
+    );
+  };
 
   return mentions.map((mention, index) => {
-    if (mention.start < 0 || mention.length <= 0) {
+    const range = findMentionRange(mention, index);
+
+    if (range.start < 0 || range.length <= 0) {
       throw new ToolInputError(`mentions[${index}] has invalid range. start must be >= 0 and length > 0.`);
     }
 
-    if (mention.start + mention.length > charLength) {
+    if (range.start + range.length > charLength) {
       throw new ToolInputError(
-        `mentions[${index}] range is out of bounds for post text. text length=${charLength}, start=${mention.start}, length=${mention.length}.`,
+        `mentions[${index}] range is out of bounds for post text. text length=${charLength}, start=${range.start}, length=${range.length}.`,
       );
     }
 
@@ -381,8 +411,8 @@ function buildMentionAttributes(input: {
 
     if (mention.entity_type === "member") {
       return {
-        start: mention.start,
-        length: mention.length,
+        start: range.start,
+        length: range.length,
         value: {
           "com.linkedin.common.MemberAttributedEntity": {
             member: mention.entity_urn,
@@ -392,8 +422,8 @@ function buildMentionAttributes(input: {
     }
 
     return {
-      start: mention.start,
-      length: mention.length,
+      start: range.start,
+      length: range.length,
       value: {
         "com.linkedin.common.CompanyAttributedEntity": {
           company: mention.entity_urn,
@@ -543,9 +573,9 @@ async function uploadBinaryFromUrl(input: {
   if (!sourceResponse.ok) {
     throw new ToolInputError(`Failed to fetch media URL (${sourceResponse.status}): ${input.sourceUrl}`);
   }
-
   const bytes = await sourceResponse.arrayBuffer();
   const sourceContentType = sourceResponse.headers.get("content-type") ?? "application/octet-stream";
+
   const contentType = sourceContentType.split(";")[0].trim().toLowerCase();
 
   if (input.mediaKind === "image") {
@@ -585,8 +615,10 @@ function mentionSchema() {
     .array(
       z.object({
         entity_urn: z.string().min(1),
-        start: z.number().int().min(0),
-        length: z.number().int().min(1),
+        entity_link: z.string().url(),
+        entity_name: z.string().min(1).optional(),
+        target_text: z.string().min(1),
+        occurrence: z.number().int().min(1).optional(),
         entity_type: z.enum(["member", "company"]),
       }),
     )
@@ -617,6 +649,205 @@ function normalizeAuthorUrn(authorUrn: string | undefined, fallbackAuthorUrn: st
   }
 
   return value;
+}
+
+function browserUseBaseUrl(env: LinkedInEnv): string {
+  return (env.BROWSER_USE_BASE_URL || BROWSER_USE_DEFAULT_BASE_URL).trim().replace(/\/+$/, "");
+}
+
+function extractUrnFromAny(input: unknown): string | undefined {
+  if (typeof input === "string") {
+    const match = input.match(/urn:li:(person|organization):[A-Za-z0-9_-]+/);
+    if (match) {
+      return match[0];
+    }
+  }
+  if (!input || typeof input !== "object") {
+    return undefined;
+  }
+
+  const value = input as Record<string, unknown>;
+  const preferredKeys = ["urn", "entity_urn", "profile_urn", "person_urn", "organization_urn"];
+  for (const key of preferredKeys) {
+    const candidate = value[key];
+    if (typeof candidate === "string") {
+      const match = candidate.match(/urn:li:(person|organization):[A-Za-z0-9_-]+/);
+      if (match) {
+        return match[0];
+      }
+    }
+  }
+
+  for (const nested of Object.values(value)) {
+    const found = extractUrnFromAny(nested);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+function extractNameFromAny(input: unknown): string | undefined {
+  if (!input || typeof input !== "object") {
+    return undefined;
+  }
+  const value = input as Record<string, unknown>;
+  const preferredKeys = ["name", "full_name", "display_name", "company_name", "organization_name"];
+  for (const key of preferredKeys) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+  for (const nested of Object.values(value)) {
+    const found = extractNameFromAny(nested);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+async function runBrowserUseMentionCheck(input: {
+  env: LinkedInEnv;
+  entityLink: string;
+}): Promise<{ urn?: string; name?: string }> {
+  const apiKey = input.env.BROWSER_USE_API_KEY?.trim();
+  const skillId = input.env.BROWSER_USE_SKILL_ID?.trim();
+  if (!apiKey || !skillId) {
+    throw new ToolInputError(
+      "Missing BROWSER_USE_API_KEY or BROWSER_USE_SKILL_ID for Browser Use mention checker.",
+    );
+  }
+
+  const executeUrl = `${browserUseBaseUrl(input.env)}/skills/${encodeURIComponent(skillId)}/execute`;
+  const executeResponse = await fetch(executeUrl, {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      parameters: {
+        profile_url: input.entityLink,
+      },
+    }),
+  });
+
+  const executeBody = await executeResponse.text();
+  let executePayload: Record<string, unknown> = {};
+  try {
+    executePayload = JSON.parse(executeBody) as Record<string, unknown>;
+  } catch {
+    executePayload = { raw: executeBody };
+  }
+
+  if (!executeResponse.ok) {
+    throw new ToolInputError(`Browser Use checker failed (${executeResponse.status}): ${executeBody}`);
+  }
+
+  let outputPayload: unknown = executePayload;
+  const executionId =
+    typeof executePayload.execution_id === "string"
+      ? executePayload.execution_id
+      : typeof executePayload.id === "string"
+        ? executePayload.id
+        : undefined;
+
+  if (executionId) {
+    const outputUrl = `${browserUseBaseUrl(input.env)}/skills/${encodeURIComponent(skillId)}/executions/${encodeURIComponent(executionId)}/output`;
+    for (let i = 0; i < 5; i += 1) {
+      const outputResponse = await fetch(outputUrl, {
+        method: "GET",
+        headers: {
+          "x-api-key": apiKey,
+          Accept: "application/json",
+        },
+      });
+
+      const outputText = await outputResponse.text();
+      let outputObj: Record<string, unknown> = {};
+      try {
+        outputObj = JSON.parse(outputText) as Record<string, unknown>;
+      } catch {
+        outputObj = { raw: outputText };
+      }
+
+      if (!outputResponse.ok) {
+        throw new ToolInputError(`Browser Use output failed (${outputResponse.status}): ${outputText}`);
+      }
+
+      outputPayload = outputObj;
+      const status = typeof outputObj.status === "string" ? outputObj.status.toLowerCase() : "";
+      if (outputObj.output || status === "completed" || status === "done" || status === "success") {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    }
+  }
+
+  const source = (outputPayload as Record<string, unknown>).output ?? outputPayload;
+  return {
+    urn: extractUrnFromAny(source),
+    name: extractNameFromAny(source),
+  };
+}
+
+async function checkAndFixMentionsWithBrowserUse(input: {
+  env: LinkedInEnv;
+  mentions?: MentionInput[];
+}): Promise<{
+  mentions?: MentionInput[];
+  corrections: Array<{ index: number; old_urn: string; new_urn?: string; old_name?: string; new_name?: string }>;
+}> {
+  const mentions = input.mentions;
+  if (!mentions || mentions.length === 0) {
+    return { mentions, corrections: [] };
+  }
+
+  const correctedMentions = [...mentions];
+  const corrections: Array<{
+    index: number;
+    old_urn: string;
+    new_urn?: string;
+    old_name?: string;
+    new_name?: string;
+  }> = [];
+
+  for (let i = 0; i < correctedMentions.length; i += 1) {
+    const mention = correctedMentions[i];
+    const check = await runBrowserUseMentionCheck({
+      env: input.env,
+      entityLink: mention.entity_link,
+    });
+
+    const correction = {
+      index: i,
+      old_urn: mention.entity_urn,
+      old_name: mention.entity_name,
+      new_urn: undefined as string | undefined,
+      new_name: undefined as string | undefined,
+    };
+
+    if (check.urn && check.urn !== mention.entity_urn) {
+      mention.entity_urn = check.urn;
+      correction.new_urn = check.urn;
+    }
+
+    if (check.name && check.name !== mention.entity_name) {
+      mention.entity_name = check.name;
+      correction.new_name = check.name;
+    }
+
+    if (correction.new_urn || correction.new_name) {
+      corrections.push(correction);
+    }
+  }
+
+  return {
+    mentions: correctedMentions,
+    corrections,
+  };
 }
 
 async function withLinkedInSession<T>(
@@ -708,6 +939,8 @@ export function registerLinkedInTools(
       return runTool("Create post", async () =>
         withLinkedInSession(env, auth, async ({ accessToken, authorUrn }) => {
           const effectiveAuthorUrn = normalizeAuthorUrn(author_urn, authorUrn);
+          const mentionCheck = await checkAndFixMentionsWithBrowserUse({ env, mentions });
+          const checkedMentions = mentionCheck.mentions;
           const mediaItems = media ?? [];
           const imageItems = mediaItems.filter((item: PostMediaInputItem) => item.type === "IMAGE");
           const videoItems = mediaItems.filter((item: PostMediaInputItem) => item.type === "VIDEO");
@@ -755,7 +988,7 @@ export function registerLinkedInTools(
                   text: meta.description ?? "",
                 },
               })),
-              mentions,
+              mentions: checkedMentions,
             });
             createdPosts.push({ mode: "IMAGE", post_id: postId });
           }
@@ -799,7 +1032,7 @@ export function registerLinkedInTools(
                   text: meta.description ?? "",
                 },
               })),
-              mentions,
+              mentions: checkedMentions,
             });
             createdPosts.push({ mode: "VIDEO", post_id: postId });
           }
@@ -813,7 +1046,7 @@ export function registerLinkedInTools(
               text,
               visibility: parseVisibility(visibility),
               shareMediaCategory: "NONE",
-              mentions,
+              mentions: checkedMentions,
             });
             createdPosts.push({ mode: "TEXT", post_id: postId });
           }
@@ -823,6 +1056,7 @@ export function registerLinkedInTools(
               {
                 created_count: createdPosts.length,
                 created_posts: createdPosts,
+                mention_corrections: mentionCheck.corrections,
               },
               null,
               2,
