@@ -4,9 +4,37 @@ This is a TypeScript Cloudflare Worker MCP server equivalent of the Python `link
 
 ## Implemented MCP Tools
 
-- `get_profile`
-- `create_post`
-- `create_post_with_media`
+- `linkedin_get_profile`
+- `linkedin_create_post` (single unified post tool: text, mentions, image upload, or video upload)
+
+`linkedin_create_post` media inputs:
+- text-only post: omit `media`
+- media post(s): `media: [{ "type": "IMAGE|VIDEO", "url": "...", "title": "...", "description": "..." }]`
+- mixed image+video in one request is allowed (creates one image post and one video post)
+
+Additional `linkedin_create_post` parameters:
+- `author_urn` (optional): post as `urn:li:person:<id>` or `urn:li:organization:<id>`
+- `lifecycle_state` (optional): `PUBLISHED` or `DRAFT` (default `PUBLISHED`)
+
+Rules:
+- If `media` contains both IMAGE and VIDEO items, the tool creates multiple posts and returns all post IDs.
+
+Mention object shape:
+
+```json
+{
+  "entity_urn": "urn:li:person:...",
+  "start": 0,
+  "length": 8,
+  "entity_type": "member"
+}
+```
+
+`entity_type` can be `member` or `company` (`urn:li:organization:...`).
+
+## Posting Guide
+
+See [POSTING_GUIDE.md](./POSTING_GUIDE.md) for mention index math (`start`/`length`), payload examples, and troubleshooting.
 
 ## Routes
 
@@ -66,9 +94,9 @@ npm run deploy
 
 ## Optional env vars
 
-- `LINKEDIN_VERSION` (default `202210`)
+- `LINKEDIN_VERSION` (default `202506`)
 - `RESTLI_PROTOCOL_VERSION` (default `2.0.0`)
-- `ENABLE_DEBUG_TOOLS` (`true` enables `get_auth_diagnostics`)
+- `ENABLE_DEBUG_TOOLS` (`true` enables `linkedin_get_auth_diagnostics`)
 
 ## Notes
 
