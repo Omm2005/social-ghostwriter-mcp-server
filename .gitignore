@@ -1,1 +1,33 @@
-node_modules
+node_modules/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+.dev.vars
+
+# Cloudflare/Wrangler local state
+.wrangler/
+
+# Build and cache artifacts
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Logs and runtime files
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.pid
+*.seed
+*.pid.lock
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+!.vscode/extensions.json
